@@ -1,9 +1,7 @@
 from flask import Flask, request, jsonify
-import requests
 import os
 from werkzeug.utils import secure_filename
 from openai import OpenAI
-import time
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
 from dotenv import load_dotenv
