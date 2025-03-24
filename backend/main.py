@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS 
 import os
 from werkzeug.utils import secure_filename
 from openai import OpenAI
@@ -10,6 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app)
 app.config['UPLOAD_FOLDER'] = 'uploads/'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
