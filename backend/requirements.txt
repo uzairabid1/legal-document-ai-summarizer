@@ -3,3 +3,6 @@ python-dotenv
 azure-ai-formrecognizer
 openai
 werkzeug
+flask_cors
+pdf2image
+PyMuPDF

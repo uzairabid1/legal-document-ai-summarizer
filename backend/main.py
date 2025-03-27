@@ -1,20 +1,24 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS 
+from flask import Flask, request, jsonify, send_file, Response
+from flask_cors import CORS, cross_origin
 import os
 from werkzeug.utils import secure_filename
 from openai import OpenAI
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
 from dotenv import load_dotenv
-
-
+from pdf2image import convert_from_path
+import os
+import tempfile  
+import fitz  
+import shutil  
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, support_credentials=True)
+
+
 app.config['UPLOAD_FOLDER'] = 'uploads/'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-
 AZURE_ENDPOINT = os.getenv('AZURE_ENDPOINT')
 AZURE_KEY = os.getenv('AZURE_KEY')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -56,6 +60,8 @@ def chunk_text(text, max_chunk_size=3000):
 
 
 @app.route('/analyze-and-summarize-file', methods=['POST'])
+@cross_origin(supports_credentials=True)
+
 def analyze_and_summarize_file():
     try:
         # Check if file was uploaded
@@ -131,5 +137,138 @@ def analyze_and_summarize_file():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/convert', methods=['POST'])
+def convert_pdf():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided."}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file."}), 400
+
+    try:
+        pdf_path = os.path.join("temp", file.filename)
+        output_dir = "output_images"
+        file.save(pdf_path)
+
+        image_paths = convert_pdf_to_image(pdf_path, output_dir)
+
+        if not image_paths:
+            return jsonify({"error": "Conversion failed."}), 500
+
+        # For simplicity, returning the first image file
+        return send_file(image_paths[0], mimetype='image/png')
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        # Clean up the uploaded file if necessary
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+
+
+
+def convert_pdf_to_image(pdf_path, output_dir, output_file="output_image.png"):
+    """Convert a PDF to an image using PyMuPDF."""
+    try:
+        doc = fitz.open(pdf_path)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        image_paths = []
+        for page_num in range(len(doc)):  # Iterate over all pages
+            page = doc.load_page(page_num)  # Load a single page
+            pix = page.get_pixmap(dpi=150)  # Render page to an image (dpi=150 for quality)
+            image_path = os.path.join(output_dir, f"{os.path.splitext(output_file)[0]}_{page_num + 1}.png")
+            pix.save(image_path)
+            image_paths.append(image_path)
+
+        return image_paths
+
+    except Exception as e:
+        print(f"Error during PDF to image conversion: {e}")
+        return None
+
+@app.route('/fetch-image', methods=['POST'])
+@cross_origin(supports_credentials=True)
+def fetch_pdf_image():
+
+    if not os.path.exists("temp"):
+        os.makedirs("temp")
+
+    if not os.path.exists("temp_images"):
+        os.makedirs("temp_images")
+    
+    if not os.path.exists("uploads"):
+        os.makedirs("uploads")
+        
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+
+    if not file.filename.lower().endswith('.pdf'):
+        return jsonify({"error": "Only PDF files are allowed"}), 400
+
+    pdf_path = None
+    output_dir = "output_images"
+    temp_file = None
+    image_paths = []
+
+    try:
+        # Save the uploaded file temporarily
+        filename = file.filename
+        pdf_path = os.path.join("temp", filename)
+        file.save(pdf_path)
+
+        # Convert the PDF to images
+        image_paths = convert_pdf_to_image(pdf_path, output_dir)
+
+        if not image_paths:
+            return jsonify({"error": "Failed to convert PDF to image"}), 500
+
+        # Create a temporary copy of the first image to send
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp:
+            temp_file = temp.name
+            shutil.copyfile(image_paths[0], temp_file)
+
+        # Open the temporary file in binary mode and create a response
+        with open(temp_file, 'rb') as f:
+            image_data = f.read()
+
+        # Custom response to handle cleanup after sending
+        def generate():
+            yield image_data
+            # Cleanup happens after the response is fully sent
+            try:
+                if pdf_path and os.path.exists(pdf_path):
+                    os.remove(pdf_path)
+                if temp_file and os.path.exists(temp_file):
+                    os.remove(temp_file)
+                if os.path.exists(output_dir):
+                    shutil.rmtree(output_dir)
+            except PermissionError as e:
+                print(f"Cleanup failed due to permission error: {e}")
+            except Exception as e:
+                print(f"Unexpected error during cleanup: {e}")
+
+        return Response(generate(), mimetype='image/png')
+
+    except Exception as e:
+        # Clean up in case of an exception before the response
+        if pdf_path and os.path.exists(pdf_path):
+            os.remove(pdf_path)
+        if temp_file and os.path.exists(temp_file):
+            os.remove(temp_file)
+        if os.path.exists(output_dir):
+            try:
+                shutil.rmtree(output_dir)
+            except Exception as e:
+                print(f"Error cleaning up output_dir on exception: {e}")
+        return jsonify({"error": str(e)}), 500
 if __name__ == '__main__':
     app.run(debug=True)
